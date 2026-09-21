@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import requests
 from datetime import datetime, timedelta
@@ -9,7 +10,7 @@ from zoneinfo import ZoneInfo
 # ---------------------------------------------------------
 
 st.set_page_config(
-    page_title="어제의 박스오피스",
+    page_title="박스오피스",
     page_icon="🎬",
     layout="wide",
 )
@@ -26,22 +27,22 @@ API_URL = (
 
 
 # ---------------------------------------------------------
-# 한국 시간 기준으로 '어제' 날짜 계산
-# 배포 서버가 해외 시간이어도 한국 시간을 사용합니다.
-# ---------------------------------------------------------
-
-def get_yesterday_kst():
-    """한국 시간 기준 어제 날짜를 YYYYMMDD 형태로 반환합니다."""
-    korea_time = datetime.now(ZoneInfo("Asia/Seoul"))
-    yesterday = korea_time - timedelta(days=1)
-    return yesterday.strftime("%Y%m%d")
-
-
-# ---------------------------------------------------------
-# KOBIS API에서 일일 박스오피스 가져오기
+# 한국 시간 기준 날짜 계산
 #
-# st.cache_data를 사용해서 같은 날짜를 다시 요청하면
-# 약 1시간 동안 저장된 결과를 재사용합니다.
+# 배포 서버의 시간이 한국 시간이 아닐 수 있으므로
+# 반드시 Asia/Seoul 시간대를 사용합니다.
+# ---------------------------------------------------------
+
+def get_korea_today():
+    """한국 시간 기준 오늘 날짜를 반환합니다."""
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+# ---------------------------------------------------------
+# KOBIS API에서 박스오피스 가져오기
+#
+# 같은 날짜를 다시 조회하면 1시간 동안 캐시된 결과를
+# 사용합니다.
 # ---------------------------------------------------------
 
 @st.cache_data(ttl=3600)
@@ -54,50 +55,50 @@ def get_boxoffice(target_date, api_key):
     }
 
     try:
-        # API 요청
         response = requests.get(
             API_URL,
             params=params,
             timeout=10,
         )
 
-        # HTTP 오류가 발생하면 예외를 발생시킵니다.
+        # HTTP 오류가 있으면 예외를 발생시킵니다.
         response.raise_for_status()
 
-        # JSON 응답으로 변환합니다.
+        # JSON으로 변환합니다.
         data = response.json()
 
     except requests.exceptions.RequestException as e:
         return {
             "success": False,
-            "message": f"KOBIS API 요청에 실패했습니다.\n\n{e}",
+            "message": (
+                "KOBIS API 요청에 실패했습니다.\n\n"
+                f"{e}"
+            ),
         }
 
     except ValueError:
         return {
             "success": False,
-            "message": "KOBIS API 응답을 JSON으로 읽을 수 없습니다.",
+            "message": (
+                "KOBIS API 응답을 JSON으로 읽을 수 없습니다."
+            ),
         }
 
     # -----------------------------------------------------
-    # 인증키가 잘못된 경우에도 HTTP 상태코드는 200일 수 있습니다.
-    # 따라서 faultInfo가 있는지 반드시 확인합니다.
+    # KOBIS는 인증키가 잘못되어도 HTTP 200을 반환할 수 있습니다.
+    # 따라서 faultInfo를 반드시 확인합니다.
     # -----------------------------------------------------
 
     if "faultInfo" in data:
-        fault_info = data["faultInfo"]
-
-        # faultInfo 안의 내용이 어떤 형태로 오더라도
-        # 화면에 확인할 수 있도록 문자열로 표시합니다.
         return {
             "success": False,
             "message": (
                 "KOBIS API에서 오류를 반환했습니다.\n\n"
-                f"{fault_info}"
+                f"{data['faultInfo']}"
             ),
         }
 
-    # 예상한 응답 구조가 있는지 확인합니다.
+    # 예상한 응답 구조인지 확인합니다.
     boxoffice_result = data.get("boxOfficeResult")
 
     if not boxoffice_result:
@@ -105,47 +106,46 @@ def get_boxoffice(target_date, api_key):
             "success": False,
             "message": (
                 "KOBIS 응답에 boxOfficeResult가 없습니다.\n\n"
-                "KOBIS API 주소와 인증키, 조회 날짜를 확인해 주세요."
+                "인증키와 KOBIS API 상태를 확인해 주세요."
             ),
         }
 
-    movie_list = boxoffice_result.get("dailyBoxOfficeList", [])
+    movie_list = boxoffice_result.get(
+        "dailyBoxOfficeList",
+        []
+    )
 
-    # 영화 목록이 비어 있으면 사용자에게 확인할 내용을 알려줍니다.
+    # 영화 목록이 없으면 호출한 곳에서
+    # '아직 집계 전'으로 안내할 수 있도록 별도로 표시합니다.
     if not movie_list:
         return {
             "success": False,
-            "message": (
-                "조회된 영화 목록이 없습니다.\n\n"
-                "다음 항목을 확인해 주세요.\n"
-                "• KOBIS 인증키(KOBIS_KEY)가 올바른지\n"
-                "• KOBIS API가 정상적으로 응답하는지\n"
-                "• 조회 날짜에 박스오피스 데이터가 존재하는지"
-            ),
+            "empty": True,
+            "message": "그날은 아직 집계 전입니다.",
         }
 
     return {
         "success": True,
+        "empty": False,
         "data": movie_list,
     }
 
 
 # ---------------------------------------------------------
-# 숫자로 변환
+# 숫자 문자열을 정수로 변환
 #
-# KOBIS API의 숫자 값은 문자열로 오기 때문에
-# 정렬과 그래프에 사용할 수 있도록 정수로 변환합니다.
+# KOBIS API의 rank, audiCnt 등의 값은 문자열로 옵니다.
+# 그래프와 정렬에 사용하기 위해 숫자로 바꿉니다.
 # ---------------------------------------------------------
 
 def convert_to_numbers(movie_list):
-    """API에서 받은 숫자 문자열을 정수로 변환합니다."""
+    """KOBIS의 숫자 문자열을 정수로 변환합니다."""
 
     converted = []
 
     for movie in movie_list:
         item = movie.copy()
 
-        # 숫자로 사용해야 하는 필드들
         number_fields = [
             "rank",
             "rankInten",
@@ -167,73 +167,129 @@ def convert_to_numbers(movie_list):
 
 
 # ---------------------------------------------------------
-# 제목
+# 화면 제목
 # ---------------------------------------------------------
 
-st.title("🎬 어제의 박스오피스")
-
-target_date = get_yesterday_kst()
-
-# 화면에는 YYYY-MM-DD 형태로 보기 좋게 표시합니다.
-display_date = datetime.strptime(
-    target_date, "%Y%m%d"
-).strftime("%Y-%m-%d")
-
-st.caption(f"한국 시간 기준 조회 날짜: {display_date}")
+st.title("🎬 일일 박스오피스")
 
 
 # ---------------------------------------------------------
-# Streamlit Cloud Secrets에서 인증키 가져오기
+# 한국 시간 기준 날짜 범위 만들기
 #
-# Streamlit Cloud의 Secrets에 다음과 같이 등록합니다.
+# 가장 늦게 고를 수 있는 날짜 = 어제
+# ---------------------------------------------------------
+
+today_kst = get_korea_today()
+yesterday_kst = today_kst - timedelta(days=1)
+
+
+# ---------------------------------------------------------
+# 달력에서 날짜 선택
 #
-# KOBIS_KEY = "발급받은_인증키"
+# 시작 날짜는 넉넉하게 2000-01-01로 설정했습니다.
+# 필요하다면 원하는 시작 날짜로 바꿀 수 있습니다.
+# ---------------------------------------------------------
+
+selected_date = st.date_input(
+    "조회할 날짜를 선택하세요.",
+    value=yesterday_kst,
+    min_value=datetime(2000, 1, 1).date(),
+    max_value=yesterday_kst,
+)
+
+
+# ---------------------------------------------------------
+# 날짜를 KOBIS가 요구하는 YYYYMMDD 형태로 변환
+# ---------------------------------------------------------
+
+target_date = selected_date.strftime("%Y%m%d")
+
+st.caption(
+    f"조회 날짜: {selected_date.strftime('%Y-%m-%d')}"
+)
+
+
+# ---------------------------------------------------------
+# Streamlit Secrets에서 인증키 가져오기
 #
-# 실제 인증키는 코드에 작성하지 않습니다.
+# Streamlit Cloud > 앱 > Settings > Secrets에서
+# KOBIS_KEY를 등록해야 합니다.
 # ---------------------------------------------------------
 
 try:
     api_key = st.secrets["KOBIS_KEY"]
+
 except KeyError:
     st.error(
-        "KOBIS_KEY를 찾을 수 없습니다.\n\n"
-        "Streamlit Cloud의 앱 설정에서 Secrets를 열고 "
+        "KOBIS_KEY를 찾을 수 없습니다."
+    )
+
+    st.info(
+        "Streamlit Cloud의 Secrets에 다음과 같이 "
         "KOBIS_KEY를 등록했는지 확인해 주세요."
     )
+
+    st.code(
+        'KOBIS_KEY = "여기에_실제_인증키"'
+    )
+
     st.stop()
 
 
 # ---------------------------------------------------------
-# 데이터 가져오기
+# KOBIS API 호출
 # ---------------------------------------------------------
 
-result = get_boxoffice(target_date, api_key)
+result = get_boxoffice(
+    target_date,
+    api_key,
+)
 
 
 # ---------------------------------------------------------
-# API 요청 실패 처리
+# API 오류 처리
 # ---------------------------------------------------------
 
 if not result["success"]:
-    st.error("박스오피스 데이터를 가져오지 못했습니다.")
-    st.warning(result["message"])
 
-    st.info(
-        "확인할 항목:\n"
-        "1. Streamlit Cloud Secrets에 KOBIS_KEY가 등록되어 있는지\n"
-        "2. 인증키가 정확한지\n"
-        "3. KOBIS API 주소에 접속할 수 있는지\n"
-        "4. 조회 날짜에 데이터가 존재하는지"
-    )
+    # 영화 목록이 없는 경우
+    if result.get("empty", False):
+        st.warning(
+            "📅 그날은 아직 집계 전입니다."
+        )
+
+        st.info(
+            "다른 날짜를 선택해 주세요. "
+            "KOBIS에 일일 박스오피스 데이터가 등록된 "
+            "날짜만 영화 목록을 볼 수 있습니다."
+        )
+
+    # 그 외 API 오류
+    else:
+        st.error(
+            "박스오피스 데이터를 가져오지 못했습니다."
+        )
+
+        st.warning(result["message"])
+
+        st.info(
+            "다음 항목을 확인해 주세요.\n\n"
+            "• Streamlit Cloud Secrets에 KOBIS_KEY가 등록되어 있는지\n"
+            "• 인증키가 정확한지\n"
+            "• KOBIS API 주소에 접속할 수 있는지\n"
+            "• 선택한 날짜의 데이터가 존재하는지"
+        )
 
     st.stop()
 
 
 # ---------------------------------------------------------
-# 영화 데이터 숫자 변환
+# 숫자 변환
 # ---------------------------------------------------------
 
-movies = convert_to_numbers(result["data"])
+movies = convert_to_numbers(
+    result["data"]
+)
 
 
 # ---------------------------------------------------------
@@ -242,18 +298,22 @@ movies = convert_to_numbers(result["data"])
 
 first_movie = movies[0]
 
+st.subheader("🥇 1위 영화")
 
-st.subheader("🥇 오늘의 1위 영화")
+st.markdown(
+    f"### {first_movie['movieNm']}"
+)
 
-st.markdown(f"### {first_movie['movieNm']}")
 
+# ---------------------------------------------------------
+# 1위 영화 지표 카드
+# ---------------------------------------------------------
 
-# 지표 카드 3개
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.metric(
-        "오늘 관객수",
+        "관객수",
         f"{first_movie['audiCnt']:,}명",
     )
 
@@ -271,7 +331,7 @@ with col3:
 
 
 # ---------------------------------------------------------
-# 관객수 상위 5편 막대그래프
+# 관객수 상위 5편
 # ---------------------------------------------------------
 
 st.subheader("📊 관객수 상위 5편")
@@ -282,7 +342,9 @@ top5 = sorted(
     reverse=True,
 )[:5]
 
-# Streamlit 차트에 사용할 데이터
+
+# 영화명을 그래프의 이름으로 사용하고
+# 관객수를 숫자로 사용합니다.
 chart_data = {
     movie["movieNm"]: movie["audiCnt"]
     for movie in top5
@@ -297,19 +359,56 @@ st.bar_chart(chart_data)
 
 st.subheader("📋 전체 박스오피스")
 
+
 table_data = []
 
 for movie in movies:
+
+    # -----------------------------------------------------
+    # rankInten:
+    # 양수 = 전날보다 순위가 올라감
+    # 음수 = 전날보다 순위가 내려감
+    #
+    # 표에서 보기 쉽게 화살표를 붙입니다.
+    # -----------------------------------------------------
+
+    rank_change = movie["rankInten"]
+
+    if rank_change > 0:
+        rank_display = f"🔴 ↑ {rank_change}"
+
+    elif rank_change < 0:
+        rank_display = f"🔵 ↓ {abs(rank_change)}"
+
+    else:
+        rank_display = "➖ 0"
+
+    # -----------------------------------------------------
+    # 누적 관객수가 100만 명 이상이면
+    # 영화명 뒤에 트로피를 붙입니다.
+    # -----------------------------------------------------
+
+    movie_name = movie["movieNm"]
+
+    if movie["audiAcc"] >= 1_000_000:
+        movie_name = f"{movie_name} 🏆"
+
     table_data.append(
         {
             "순위": movie["rank"],
-            "영화명": movie["movieNm"],
+            "영화명": movie_name,
             "개봉일": movie["openDt"],
             "관객수": movie["audiCnt"],
             "누적관객": movie["audiAcc"],
             "스크린수": movie["scrnCnt"],
+            "전일 대비 순위": rank_display,
         }
     )
+
+
+# ---------------------------------------------------------
+# 표 표시
+# ---------------------------------------------------------
 
 st.dataframe(
     table_data,
@@ -337,9 +436,10 @@ st.dataframe(
 
 
 # ---------------------------------------------------------
-# 안내 문구
+# 데이터 출처
 # ---------------------------------------------------------
 
 st.caption(
     "※ 데이터 출처: 영화진흥위원회(KOBIS) 일일 박스오피스 API"
 )
+```
